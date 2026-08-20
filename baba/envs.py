@@ -5,7 +5,7 @@ import numpy as np
 
 from baba.grid import BabaIsYouGrid, BabaIsYouEnv, put_rule, place_rule
 from baba.play import play
-from baba.world_object import FBall, Baba, make_obj, RuleObject, Wall
+from baba.world_object import FBall, Baba, make_obj, RuleColor, RuleIs, RuleObject, RuleProperty, Wall
 from baba import make, register
 
 
@@ -909,6 +909,498 @@ class TwoRoomMakeWallWinEnv(BabaIsYouEnv):
             place_obj(self, obj2, **self.obj2_pos)
 
         self.target_plan = f"break[wall is stop], make[wall is win], goto[wall]"
+
+
+class SeededRuleCompositionEnv(BabaIsYouEnv):
+    """Base class for reproducible families of rule-composition levels."""
+
+    def __init__(self, width=8, height=8, **kwargs):
+        self._composition_rng = np.random.RandomState()
+        self.generation_seed = None
+        super().__init__(width=width, height=height, **kwargs)
+
+    def seed(self, seed=None):
+        """Seed this generator, including through BALROG's legacy Gym wrapper."""
+        self.generation_seed = None if seed is None else int(seed)
+        self._composition_rng = np.random.RandomState(seed)
+        return [seed]
+
+    def reset(self, *, seed=None, return_info=False, options=None):
+        if seed is not None:
+            self.seed(seed)
+        # This family uses its own RNG so it also works through Gym v0.21's
+        # seed-then-reset compatibility path. Avoid storing Gym's Generator,
+        # which cannot be deep-copied with Gym 0.25 and NumPy 2.x.
+        return super().reset(seed=None, return_info=return_info, options=options)
+
+    def _choice(self, values):
+        return values[int(self._composition_rng.randint(len(values)))]
+
+    def _sample_objects(self, count=2):
+        names = [str(name) for name in self._composition_rng.permutation(NAMES)[:count]]
+        colors = [str(color) for color in self._composition_rng.choice(COLORS, size=count)]
+        return list(zip(colors, names))
+
+    def _init_generated_grid(self):
+        self.grid = BabaIsYouGrid(self.width, self.height)
+        self.grid.wall_rect(0, 0, self.width, self.height)
+
+        # Keeping this rule against the left and bottom borders makes it
+        # impossible to displace without giving text blocks special behavior.
+        put_rule(self, "baba", "you", positions=(1, self.height - 2))
+
+    def _set_solution(self, target_plan, actions, **generation_params):
+        self.target_plan = target_plan
+        # Used by tests and offline validation; BALROG does not expose it.
+        self.reference_solution = tuple(actions)
+        self.generation_params = {
+            "seed": self.generation_seed,
+            **generation_params,
+        }
+
+
+@register("env/composition-01-target-lock")
+class TargetLockEnv(SeededRuleCompositionEnv):
+    """A target is both WIN and STOP; remove only the STOP rule."""
+
+    def _gen_grid(self, width, height, params=None):
+        self._init_generated_grid()
+        target, distractor = self._sample_objects()
+        target_color, target_name = target
+        distractor_color, distractor_name = distractor
+
+        variants = [
+            {
+                "rule": (2, 2),
+                "baba": (4, 3),
+                "target": (6, 3),
+                "distractor": (1, 5),
+                "actions": ["up", "right", "right", "down"],
+            },
+            {
+                "rule": (3, 2),
+                "baba": (5, 3),
+                "target": (1, 3),
+                "distractor": (6, 5),
+                "actions": ["up", "down", "left", "left", "left", "left"],
+            },
+            {
+                "rule": [(2, 1), (2, 2), (2, 3)],
+                "baba": (3, 3),
+                "target": (6, 4),
+                "distractor": (1, 5),
+                "actions": ["left", "right", "right", "right", "right", "down"],
+            },
+            {
+                "rule": [(5, 1), (5, 2), (5, 3)],
+                "baba": (4, 3),
+                "target": (1, 4),
+                "distractor": (6, 5),
+                "actions": ["right", "left", "left", "left", "left", "down"],
+            },
+        ]
+        variant_idx = int(self._composition_rng.randint(len(variants)))
+        variant = variants[variant_idx]
+
+        put_rule(self, target_name, "stop", positions=variant["rule"])
+        put_rule(self, target_name, "win", positions=(4, height - 2))
+        put_obj(self, "baba", variant["baba"])
+        put_obj(self, target, variant["target"])
+        put_obj(self, distractor, variant["distractor"])
+
+        self._set_solution(
+            f"break[{target_name} is stop], preserve[{target_name} is win], goto[{target_name}]",
+            variant["actions"],
+            variant=variant_idx,
+            target=target_name,
+            target_color=target_color,
+            distractor=distractor_name,
+            distractor_color=distractor_color,
+        )
+
+
+@register("env/composition-02-stop-to-win")
+class StopToWinEnv(SeededRuleCompositionEnv):
+    """Replace the target's STOP property with WIN."""
+
+    def _gen_grid(self, width, height, params=None):
+        self._init_generated_grid()
+        target, distractor = self._sample_objects()
+        target_color, target_name = target
+        distractor_color, distractor_name = distractor
+
+        variants = [
+            {
+                "rule": (2, 3),
+                "win": (4, 2),
+                "baba": (4, 1),
+                "target": (6, 2),
+                "distractor": (1, 5),
+                "actions": ["down", "right", "right"],
+            },
+            {
+                "rule": (2, 3),
+                "win": (4, 4),
+                "baba": (4, 5),
+                "target": (1, 4),
+                "distractor": (6, 5),
+                "actions": ["up", "left", "left", "left"],
+            },
+            {
+                "rule": [(3, 2), (3, 3), (3, 4)],
+                "win": (2, 4),
+                "baba": (1, 4),
+                "target": (2, 1),
+                "distractor": (6, 5),
+                "actions": ["right", "up", "up", "up"],
+            },
+            {
+                "rule": [(4, 1), (4, 2), (4, 3)],
+                "win": (5, 3),
+                "baba": (6, 3),
+                "target": (6, 5),
+                "distractor": (1, 5),
+                "actions": ["left", "right", "down", "down"],
+            },
+        ]
+        variant_idx = int(self._composition_rng.randint(len(variants)))
+        variant = variants[variant_idx]
+
+        put_rule(self, target_name, "stop", positions=variant["rule"])
+        put_obj(self, RuleProperty("win"), variant["win"])
+        put_obj(self, "baba", variant["baba"])
+        put_obj(self, target, variant["target"])
+        put_obj(self, distractor, variant["distractor"])
+
+        self._set_solution(
+            f"replace[{target_name} is stop -> {target_name} is win], goto[{target_name}]",
+            variant["actions"],
+            variant=variant_idx,
+            target=target_name,
+            target_color=target_color,
+            distractor=distractor_name,
+            distractor_color=distractor_color,
+        )
+
+
+@register("env/composition-03-reuse-is")
+class ReuseIsEnv(SeededRuleCompositionEnv):
+    """Reuse IS from WALL IS STOP to complete a target WIN rule."""
+
+    def __init__(self, width=13, height=9, **kwargs):
+        super().__init__(width=width, height=height, **kwargs)
+
+    def _gen_grid(self, width, height, params=None):
+        self._init_generated_grid()
+        target, distractor = self._sample_objects()
+        target_color, target_name = target
+        distractor_color, distractor_name = distractor
+        target_x = int(self._choice([9, 10, 11]))
+
+        variants = [
+            {
+                "source_rule": (1, 2),
+                "target_subject": (1, 5),
+                "target_win": (3, 5),
+                "baba": (2, 1),
+                "target": (target_x, 4),
+                "actions": ["down"] * 3 + ["right"] * (target_x - 2),
+            },
+            {
+                "source_rule": (1, 5),
+                "target_subject": (1, 2),
+                "target_win": (3, 2),
+                "baba": (2, 6),
+                "target": (target_x, 3),
+                "actions": ["up"] * 3 + ["right"] * (target_x - 2),
+            },
+            {
+                "source_rule": [(2, 1), (2, 2), (2, 3)],
+                "target_subject": (4, 1),
+                "target_win": (4, 3),
+                "baba": (1, 2),
+                "target": (target_x, 4),
+                "actions": ["right"] * 2 + ["down"] * 2 + ["right"] * (target_x - 3),
+            },
+            {
+                "source_rule": [(4, 1), (4, 2), (4, 3)],
+                "target_subject": (2, 1),
+                "target_win": (2, 3),
+                "baba": (5, 2),
+                "target": (target_x, 2),
+                "actions": ["left"] * 2 + ["right"] * (target_x - 3),
+            },
+        ]
+        variant_idx = int(self._composition_rng.randint(len(variants)))
+        variant = variants[variant_idx]
+
+        put_rule(self, "wall", "stop", positions=variant["source_rule"])
+        put_obj(self, RuleObject(target_name), variant["target_subject"])
+        put_obj(self, RuleProperty("win"), variant["target_win"])
+        self.grid.vert_wall(width // 2, 1, height - 2, obj_type=lambda: make_obj("wall"))
+        put_obj(self, "baba", variant["baba"])
+        put_obj(self, target, variant["target"])
+        put_obj(self, distractor, self._choice([(8, 1), (8, 6), (11, 6)]))
+
+        self._set_solution(
+            f"break[wall is stop], reuse[is], make[{target_name} is win], goto[{target_name}]",
+            variant["actions"],
+            variant=variant_idx,
+            target=target_name,
+            target_color=target_color,
+            target_x=target_x,
+            distractor=distractor_name,
+            distractor_color=distractor_color,
+        )
+
+
+@register("env/composition-04-reuse-win")
+class ReuseWinEnv(SeededRuleCompositionEnv):
+    """Move WIN from an unusable object rule to the target rule."""
+
+    def _gen_grid(self, width, height, params=None):
+        self._init_generated_grid()
+        target, wrong_target, distractor = self._sample_objects(count=3)
+        target_color, target_name = target
+        _, wrong_target_name = wrong_target
+        distractor_color, distractor_name = distractor
+
+        variants = [
+            {
+                "source_rule": (1, 2),
+                "target_subject": (1, 4),
+                "target_is": (2, 4),
+                "baba": (3, 1),
+                "target": (6, 3),
+                "distractor": (1, 5),
+                "actions": ["down", "down", "right", "right", "right"],
+            },
+            {
+                "source_rule": (1, 4),
+                "target_subject": (1, 2),
+                "target_is": (2, 2),
+                "baba": (3, 5),
+                "target": (6, 3),
+                "distractor": (6, 5),
+                "actions": ["up", "up", "right", "right", "right"],
+            },
+            {
+                "source_rule": [(2, 1), (2, 2), (2, 3)],
+                "target_subject": (4, 1),
+                "target_is": (4, 2),
+                "baba": (1, 3),
+                "target": (6, 4),
+                "distractor": (1, 5),
+                "actions": ["right", "right", "down", "right", "right", "right"],
+            },
+            {
+                "source_rule": [(5, 1), (5, 2), (5, 3)],
+                "target_subject": (3, 1),
+                "target_is": (3, 2),
+                "baba": (6, 3),
+                "target": (1, 4),
+                "distractor": (6, 5),
+                "actions": ["left", "left", "down", "left", "left", "left"],
+            },
+        ]
+        variant_idx = int(self._composition_rng.randint(len(variants)))
+        variant = variants[variant_idx]
+
+        put_rule(self, wrong_target_name, "win", positions=variant["source_rule"])
+        put_obj(self, RuleObject(target_name), variant["target_subject"])
+        put_obj(self, RuleIs(), variant["target_is"])
+        put_obj(self, "baba", variant["baba"])
+        put_obj(self, target, variant["target"])
+        put_obj(self, distractor, variant["distractor"])
+
+        self._set_solution(
+            f"break[{wrong_target_name} is win], reuse[win], make[{target_name} is win], goto[{target_name}]",
+            variant["actions"],
+            variant=variant_idx,
+            target=target_name,
+            target_color=target_color,
+            wrong_target=wrong_target_name,
+            distractor=distractor_name,
+            distractor_color=distractor_color,
+        )
+
+
+@register("env/composition-05-cross-rule")
+class CrossRuleEnv(SeededRuleCompositionEnv):
+    """Break WALL IS STOP while preserving the crossing target WIN rule."""
+
+    def __init__(self, width=13, height=9, **kwargs):
+        super().__init__(width=width, height=height, **kwargs)
+
+    def _gen_grid(self, width, height, params=None):
+        self._init_generated_grid()
+        target, distractor = self._sample_objects()
+        target_color, target_name = target
+        distractor_color, distractor_name = distractor
+        target_x = int(self._choice([9, 10, 11]))
+
+        variants = [
+            {
+                "wall": (2, 3),
+                "is": (3, 3),
+                "stop": (4, 3),
+                "target_word": (3, 2),
+                "win": (3, 4),
+                "baba": (4, 4),
+                "target": (target_x, 3),
+                "actions": ["up"] + ["right"] * (target_x - 4),
+            },
+            {
+                "wall": (2, 5),
+                "is": (3, 5),
+                "stop": (4, 5),
+                "target_word": (3, 4),
+                "win": (3, 6),
+                "baba": (4, 4),
+                "target": (target_x, 5),
+                "actions": ["down"] + ["right"] * (target_x - 4),
+            },
+            {
+                "wall": (3, 2),
+                "is": (3, 3),
+                "stop": (3, 4),
+                "target_word": (2, 3),
+                "win": (4, 3),
+                "baba": (2, 4),
+                "target": (target_x, 5),
+                "actions": ["right", "down"] + ["right"] * (target_x - 3),
+            },
+            {
+                "wall": (4, 2),
+                "is": (4, 3),
+                "stop": (4, 4),
+                "target_word": (3, 3),
+                "win": (5, 3),
+                "baba": (5, 4),
+                "target": (target_x, 4),
+                "actions": ["left"] + ["right"] * (target_x - 4),
+            },
+        ]
+        variant_idx = int(self._composition_rng.randint(len(variants)))
+        variant = variants[variant_idx]
+
+        put_obj(self, RuleObject("wall"), variant["wall"])
+        put_obj(self, RuleIs(), variant["is"])
+        put_obj(self, RuleProperty("stop"), variant["stop"])
+        put_obj(self, RuleObject(target_name), variant["target_word"])
+        put_obj(self, RuleProperty("win"), variant["win"])
+        self.grid.vert_wall(width // 2, 1, height - 2, obj_type=lambda: make_obj("wall"))
+        put_obj(self, "baba", variant["baba"])
+        put_obj(self, target, variant["target"])
+        put_obj(self, distractor, self._choice([(8, 1), (8, 6), (11, 6)]))
+
+        self._set_solution(
+            f"break[wall is stop], preserve[{target_name} is win], goto[{target_name}]",
+            variant["actions"],
+            variant=variant_idx,
+            target=target_name,
+            target_color=target_color,
+            target_x=target_x,
+            distractor=distractor_name,
+            distractor_color=distractor_color,
+        )
+
+
+@register("env/composition-08-control-handoff")
+class ControlHandoffEnv(SeededRuleCompositionEnv):
+    """Transfer YOU to one color of another object, then control it to WIN."""
+
+    def _gen_grid(self, width, height, params=None):
+        self.grid = BabaIsYouGrid(width, height)
+        self.grid.wall_rect(0, 0, width, height)
+
+        target, goal = self._sample_objects(count=2)
+        target_color, target_name = target
+        goal_color, goal_name = goal
+        twin_color = self._choice([color for color in COLORS if color != target_color])
+        target_twin = (twin_color, target_name)
+
+        variants = [
+            {
+                "source_rule": (2, 2),
+                "target_color": (1, 3),
+                "target_subject": (2, 3),
+                "target_is": (3, 3),
+                "baba": (4, 1),
+                "barrier": [(x, 4) for x in range(1, width - 1)],
+                "target": (1, 5),
+                "goal": (6, 5),
+                "goal_rule": (4, 6),
+                "target_twin": (1, 6),
+                "actions": ["down"] + ["right"] * 5,
+            },
+            {
+                "source_rule": (3, 2),
+                "target_color": (2, 3),
+                "target_subject": (3, 3),
+                "target_is": (4, 3),
+                "baba": (5, 1),
+                "barrier": [(x, 4) for x in range(1, width - 1)],
+                "target": (6, 5),
+                "goal": (1, 5),
+                "goal_rule": (1, 6),
+                "target_twin": (6, 6),
+                "actions": ["down"] + ["left"] * 5,
+            },
+            {
+                "source_rule": [(2, 2), (2, 3), (2, 4)],
+                "target_color": (3, 1),
+                "target_subject": (3, 2),
+                "target_is": (3, 3),
+                "baba": (1, 4),
+                "barrier": [(4, y) for y in range(1, height - 1)],
+                "target": (5, 1),
+                "goal": (5, 6),
+                "goal_rule": [(6, 4), (6, 5), (6, 6)],
+                "target_twin": (6, 1),
+                "actions": ["right"] + ["down"] * 5,
+            },
+            {
+                "source_rule": [(5, 2), (5, 3), (5, 4)],
+                "target_color": (4, 1),
+                "target_subject": (4, 2),
+                "target_is": (4, 3),
+                "baba": (6, 4),
+                "barrier": [(3, y) for y in range(1, height - 1)],
+                "target": (2, 6),
+                "goal": (2, 1),
+                "goal_rule": [(1, 4), (1, 5), (1, 6)],
+                "target_twin": (1, 1),
+                "actions": ["left"] + ["up"] * 5,
+            },
+        ]
+        variant_idx = int(self._composition_rng.randint(len(variants)))
+        variant = variants[variant_idx]
+
+        put_rule(self, "baba", "you", positions=variant["source_rule"])
+        put_obj(self, RuleColor(target_color), variant["target_color"])
+        put_obj(self, RuleObject(target_name), variant["target_subject"])
+        put_obj(self, RuleIs(), variant["target_is"])
+        put_rule(self, goal_name, "win", positions=variant["goal_rule"])
+        for pos in variant["barrier"]:
+            put_obj(self, Wall(), pos)
+
+        put_obj(self, "baba", variant["baba"])
+        put_obj(self, target, variant["target"])
+        put_obj(self, goal, variant["goal"])
+        put_obj(self, target_twin, variant["target_twin"])
+
+        self._set_solution(
+            f"transfer[you: baba -> {target_color} {target_name}], "
+            f"control[{target_color} {target_name}], goto[{goal_name}]",
+            variant["actions"],
+            variant=variant_idx,
+            target=target_name,
+            target_color=target_color,
+            goal=goal_name,
+            goal_color=goal_color,
+            target_twin_color=twin_color,
+        )
 
 
 if __name__ == "__main__":
