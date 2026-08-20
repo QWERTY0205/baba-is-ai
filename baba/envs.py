@@ -958,6 +958,28 @@ class SeededRuleCompositionEnv(BabaIsYouEnv):
             **generation_params,
         }
 
+    def _transform_square_pos(self, pos, *, flip_vertical=False, transpose=False):
+        """Transform an interior layout without reversing rule-token order."""
+        x, y = pos
+        if flip_vertical:
+            y = self.height - 1 - y
+        if transpose:
+            x, y = y, x
+        return x, y
+
+    def _transform_square_actions(self, actions, *, flip_vertical=False, transpose=False):
+        vectors = {name: np.array(delta) for name, delta in ACTIONS.items()}
+        names = {tuple(delta): name for name, delta in ACTIONS.items()}
+        transformed = []
+        for action in actions:
+            dx, dy = vectors[action]
+            if flip_vertical:
+                dy = -dy
+            if transpose:
+                dx, dy = dy, dx
+            transformed.append(names[(int(dx), int(dy))])
+        return transformed
+
 
 @register("env/composition-01-target-lock")
 class TargetLockEnv(SeededRuleCompositionEnv):
@@ -1306,6 +1328,135 @@ class CrossRuleEnv(SeededRuleCompositionEnv):
         )
 
 
+@register("env/composition-06-color-scope")
+class ColorScopeEnv(SeededRuleCompositionEnv):
+    """Narrow OBJECT IS STOP with a color prefix to pass an off-color object."""
+
+    def _gen_grid(self, width, height, params=None):
+        self.grid = BabaIsYouGrid(width, height)
+        self.grid.wall_rect(0, 0, width, height)
+
+        blocker, goal = self._sample_objects(count=2)
+        blocker_color, blocker_name = blocker
+        goal_color, goal_name = goal
+        scope_color = self._choice([color for color in COLORS if color != blocker_color])
+        scope_twin = (scope_color, blocker_name)
+
+        variant_idx = int(self._composition_rng.randint(4))
+        flip_vertical = bool(variant_idx % 2)
+        transpose = bool(variant_idx // 2)
+
+        def transform(pos):
+            return self._transform_square_pos(
+                pos,
+                flip_vertical=flip_vertical,
+                transpose=transpose,
+            )
+
+        scope_rule = [transform(pos) for pos in [(2, 1), (3, 1), (4, 1)]]
+        baba_rule = [transform(pos) for pos in [(1, 6), (2, 6), (3, 6)]]
+        goal_rule = [transform(pos) for pos in [(4, 6), (5, 6), (6, 6)]]
+        barrier = [transform(pos) for pos in [(4, 2), (4, 3), (4, 5)]]
+
+        put_rule(self, blocker_name, "stop", positions=scope_rule)
+        put_obj(self, RuleColor(scope_color), transform((1, 2)))
+        put_rule(self, "baba", "you", positions=baba_rule)
+        put_rule(self, goal_name, "win", positions=goal_rule)
+        for pos in barrier:
+            put_obj(self, Wall(), pos)
+
+        put_obj(self, "baba", transform((1, 3)))
+        put_obj(self, blocker, transform((4, 4)))
+        put_obj(self, scope_twin, transform((2, 5)))
+        put_obj(self, goal, transform((6, 4)))
+
+        actions = self._transform_square_actions(
+            ["up", "down", "down", "right", "right", "right", "right", "right"],
+            flip_vertical=flip_vertical,
+            transpose=transpose,
+        )
+        self._set_solution(
+            f"narrow[{blocker_name} is stop -> {scope_color} {blocker_name} is stop], "
+            f"pass[{blocker_color} {blocker_name}], goto[{goal_name}]",
+            actions,
+            variant=variant_idx,
+            blocker=blocker_name,
+            blocker_color=blocker_color,
+            scope_color=scope_color,
+            goal=goal_name,
+            goal_color=goal_color,
+        )
+
+
+@register("env/composition-07-one-token-fork")
+class OneTokenForkEnv(SeededRuleCompositionEnv):
+    """Commit one WIN block to the useful one of two incomplete rules."""
+
+    def _gen_grid(self, width, height, params=None):
+        self.grid = BabaIsYouGrid(width, height)
+        self.grid.wall_rect(0, 0, width, height)
+
+        first, second = self._sample_objects(count=2)
+        first_color, first_name = first
+        second_color, second_name = second
+        variant_idx = int(self._composition_rng.randint(4))
+        correct_branch = variant_idx % 2
+        transpose = bool(variant_idx // 2)
+
+        target = first if correct_branch == 0 else second
+        decoy = second if correct_branch == 0 else first
+        target_color, target_name = target
+        decoy_color, decoy_name = decoy
+
+        def transform(pos):
+            return self._transform_square_pos(pos, transpose=transpose)
+
+        put_rule(
+            self,
+            "baba",
+            "you",
+            positions=[transform(pos) for pos in [(1, 6), (2, 6), (3, 6)]],
+        )
+
+        # Branch 0 receives WIN by pushing up; branch 1 by pushing right.
+        put_obj(self, RuleObject(first_name), transform((1, 2)))
+        put_obj(self, RuleIs(), transform((2, 2)))
+        put_obj(self, RuleObject(second_name), transform((4, 1)))
+        put_obj(self, RuleIs(), transform((4, 2)))
+        put_obj(self, RuleProperty("win"), transform((3, 3)))
+        for pos in [(3, 1), (4, 4), (5, 3)]:
+            put_obj(self, Wall(), transform(pos))
+
+        put_obj(self, "baba", transform((2, 4)))
+        if correct_branch == 0:
+            target_pos = (1, 5)
+            decoy_pos = (6, 5)
+            enclosure = [(5, 5), (6, 4), (5, 6)]
+            actions = ["right", "up", "left", "left", "down", "down"]
+        else:
+            target_pos = (6, 5)
+            decoy_pos = (1, 5)
+            enclosure = [(2, 5), (1, 4)]
+            actions = ["up", "right", "down", "down", "right", "right", "right"]
+
+        put_obj(self, target, transform(target_pos))
+        put_obj(self, decoy, transform(decoy_pos))
+        for pos in enclosure:
+            put_obj(self, Wall(), transform(pos))
+
+        actions = self._transform_square_actions(actions, transpose=transpose)
+        self._set_solution(
+            f"choose[win -> {target_name} is win], reject[{decoy_name} is win], goto[{target_name}]",
+            actions,
+            variant=variant_idx,
+            target=target_name,
+            target_color=target_color,
+            decoy=decoy_name,
+            decoy_color=decoy_color,
+            correct_branch=correct_branch,
+        )
+
+
 @register("env/composition-08-control-handoff")
 class ControlHandoffEnv(SeededRuleCompositionEnv):
     """Transfer YOU to one color of another object, then control it to WIN."""
@@ -1400,6 +1551,178 @@ class ControlHandoffEnv(SeededRuleCompositionEnv):
             goal=goal_name,
             goal_color=goal_color,
             target_twin_color=twin_color,
+        )
+
+
+@register("env/composition-09-ordered-assembly")
+class OrderedAssemblyEnv(SeededRuleCompositionEnv):
+    """Position WIN before moving IS into a passage that it permanently seals."""
+
+    def _gen_grid(self, width, height, params=None):
+        self.grid = BabaIsYouGrid(width, height)
+        self.grid.wall_rect(0, 0, width, height)
+
+        target, distractor = self._sample_objects(count=2)
+        target_color, target_name = target
+        distractor_color, distractor_name = distractor
+        variant_idx = int(self._composition_rng.randint(4))
+        flip_vertical = bool(variant_idx % 2)
+        transpose = bool(variant_idx // 2)
+
+        def transform(pos):
+            return self._transform_square_pos(
+                pos,
+                flip_vertical=flip_vertical,
+                transpose=transpose,
+            )
+
+        put_rule(
+            self,
+            "baba",
+            "you",
+            positions=[transform(pos) for pos in [(1, 6), (2, 6), (3, 6)]],
+        )
+        put_rule(
+            self,
+            "wall",
+            "stop",
+            positions=[transform(pos) for pos in [(2, 2), (3, 2), (4, 2)]],
+        )
+        put_obj(self, RuleObject(target_name), transform((2, 4)))
+        put_obj(self, RuleProperty("win"), transform((4, 5)))
+        for pos in [(1, 4), (5, 4), (6, 4), (2, 5)]:
+            put_obj(self, Wall(), transform(pos))
+
+        put_obj(self, "baba", transform((4, 6)))
+        put_obj(self, target, transform((5, 3)))
+        put_obj(self, distractor, transform((1, 5)))
+
+        actions = self._transform_square_actions(
+            [
+                "up",
+                "left",
+                "up",
+                "up",
+                "left",
+                "left",
+                "up",
+                "up",
+                "right",
+                "right",
+                "down",
+                "down",
+                "right",
+                "right",
+            ],
+            flip_vertical=flip_vertical,
+            transpose=transpose,
+        )
+        self._set_solution(
+            f"prepare[win], move[is: wall is stop -> {target_name} is win], goto[{target_name}]",
+            actions,
+            variant=variant_idx,
+            target=target_name,
+            target_color=target_color,
+            distractor=distractor_name,
+            distractor_color=distractor_color,
+        )
+
+
+@register("env/composition-10-control-relay")
+class ControlRelayEnv(SeededRuleCompositionEnv):
+    """Relay control to a colored object, restore Baba remotely, then finish as Baba."""
+
+    def __init__(self, width=13, height=9, **kwargs):
+        super().__init__(width=width, height=height, **kwargs)
+
+    def _gen_grid(self, width, height, params=None):
+        self.grid = BabaIsYouGrid(width, height)
+        self.grid.wall_rect(0, 0, width, height)
+
+        target, goal = self._sample_objects(count=2)
+        target_color, target_name = target
+        goal_color, goal_name = goal
+        twin_color = self._choice([color for color in COLORS if color != target_color])
+        target_twin = (twin_color, target_name)
+
+        variant_idx = int(self._composition_rng.randint(4))
+        source_on_left = variant_idx < 2
+        flip_vertical = bool(variant_idx % 2)
+
+        if source_on_left:
+            source_rule = [(2, 2), (3, 2), (4, 2)]
+            target_stem = [(1, 3), (2, 3), (3, 3)]
+            source_you = (4, 3)
+            baba = (4, 1)
+            pocket_walls = [(3, 1), (5, 1), (5, 2)]
+            goal_rule = [(1, 7), (2, 7), (3, 7)]
+            goal_pos = (1, 6)
+            remote_baba = (7, 7)
+            remote_is = (8, 7)
+            remote_you_dest = (9, 7)
+            remote_you = (10, 7)
+            target_pos = (11, 1)
+            twin_pos = (10, 1)
+        else:
+            source_rule = [(8, 2), (9, 2), (10, 2)]
+            target_stem = [(7, 3), (8, 3), (9, 3)]
+            source_you = (10, 3)
+            baba = (10, 1)
+            pocket_walls = [(9, 1), (11, 1), (11, 2)]
+            goal_rule = [(9, 7), (10, 7), (11, 7)]
+            goal_pos = (7, 6)
+            remote_baba = (1, 7)
+            remote_is = (2, 7)
+            remote_you_dest = (3, 7)
+            remote_you = (4, 7)
+            target_pos = (5, 1)
+            twin_pos = (4, 1)
+
+        def transform(pos):
+            x, y = pos
+            if flip_vertical:
+                y = height - 1 - y
+            return x, y
+
+        put_rule(self, "baba", "you", positions=[transform(pos) for pos in source_rule])
+        put_obj(self, RuleColor(target_color), transform(target_stem[0]))
+        put_obj(self, RuleObject(target_name), transform(target_stem[1]))
+        put_obj(self, RuleIs(), transform(target_stem[2]))
+        put_rule(self, goal_name, "win", positions=[transform(pos) for pos in goal_rule])
+        put_obj(self, RuleObject("baba"), transform(remote_baba))
+        put_obj(self, RuleIs(), transform(remote_is))
+        put_obj(self, RuleProperty("you"), transform(remote_you))
+        for pos in pocket_walls:
+            put_obj(self, Wall(), transform(pos))
+        for y in range(1, height - 1):
+            put_obj(self, Wall(), (width // 2, y))
+
+        put_obj(self, "baba", transform(baba))
+        put_obj(self, target, transform(target_pos))
+        put_obj(self, target_twin, transform(twin_pos))
+        put_obj(self, goal, transform(goal_pos))
+
+        actions = ["down"] + ["down"] * 6 + ["left"]
+        if source_on_left:
+            actions += ["down"] * 4 + ["left"] * 3
+        else:
+            actions += ["down"] * 3 + ["left", "down", "left", "left"]
+        if flip_vertical:
+            actions = self._transform_square_actions(actions, flip_vertical=True)
+
+        self._set_solution(
+            f"transfer[you: baba -> {target_color} {target_name}], "
+            f"restore[baba is you], break[{target_color} {target_name} is you], goto[{goal_name}]",
+            actions,
+            variant=variant_idx,
+            target=target_name,
+            target_color=target_color,
+            target_twin_color=twin_color,
+            goal=goal_name,
+            goal_color=goal_color,
+            source_side="left" if source_on_left else "right",
+            remote_you_destination=transform(remote_you_dest),
+            source_you=transform(source_you),
         )
 
 
