@@ -1589,7 +1589,7 @@ class OrderedAssemblyEnv(SeededRuleCompositionEnv):
         )
         put_rule(
             self,
-            "wall",
+            distractor_name,
             "stop",
             positions=[transform(pos) for pos in [(2, 2), (3, 2), (4, 2)]],
         )
@@ -1623,7 +1623,8 @@ class OrderedAssemblyEnv(SeededRuleCompositionEnv):
             transpose=transpose,
         )
         self._set_solution(
-            f"prepare[win], move[is: wall is stop -> {target_name} is win], goto[{target_name}]",
+            f"prepare[win], move[is: {distractor_name} is stop -> {target_name} is win], "
+            f"goto[{target_name}]",
             actions,
             variant=variant_idx,
             target=target_name,

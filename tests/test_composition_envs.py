@@ -83,7 +83,7 @@ def expected_rules(task, params):
     if task == "env/composition-08-control-handoff":
         return {("baba", "is_agent"), (f"f{params['goal']}", "is_goal")}
     if task == "env/composition-09-ordered-assembly":
-        return {("baba", "is_agent"), ("fwall", "is_stop")}
+        return {("baba", "is_agent"), (f"f{params['distractor']}", "is_stop")}
     if task == "env/composition-10-control-relay":
         return {("baba", "is_agent"), (f"f{params['goal']}", "is_goal")}
     raise ValueError(f"unknown composition task: {task}")
@@ -265,6 +265,13 @@ class RuleCompositionEnvTest(unittest.TestCase):
             with self.subTest(seed=seed):
                 env = baba.make(task)
                 env.reset(seed=seed)
+                distractor_type = f"f{env.generation_params['distractor']}"
+                distractor_pos = object_position(env, distractor_type)
+                self.assertTrue(env.grid.get(*distractor_pos).is_stop())
+                self.assertNotIn(
+                    "fwall",
+                    {cell.type for cell in env.grid if cell is not None},
+                )
                 env.step(getattr(env.actions, env.reference_solution[0]))
                 self.assertEqual(active_rules(env), expected_rules(task, env.generation_params))
                 for action in env.reference_solution[1:-2]:
