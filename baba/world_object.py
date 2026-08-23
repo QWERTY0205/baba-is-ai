@@ -42,7 +42,7 @@ name_mapping = {
     'is_open': 'open',
     'is_shut': 'shut'
 }
-# by default, add the displayed name is the type of the object
+# By default, use the object type itself as its displayed name.
 name_mapping.update({o: o for o in objects if o not in name_mapping})
 name_mapping_inverted = {v: k for k, v in name_mapping.items()}
 

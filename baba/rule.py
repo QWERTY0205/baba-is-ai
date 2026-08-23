@@ -107,7 +107,7 @@ def extract_ruleset(grid, default_ruleset=None):
             if inside_grid(grid, (i-1, j)) and inside_grid(grid, (i+1, j)):
                 left_cell = grid.get(i-1, j)
                 right_cell = grid.get(i+1, j)
-                # check for color rule  # TODO: make it more general
+                # A color-scoped rule has one extra prefix word to the left.
                 if inside_grid(grid, (i-2, j)):
                     is_color_rule = maybe_add_rule([grid.get(i-2, j), left_cell, e, right_cell], ruleset)
                 else:
@@ -120,13 +120,13 @@ def extract_ruleset(grid, default_ruleset=None):
             if inside_grid(grid, (i, j-1)) and inside_grid(grid, (i, j+1)):
                 up_cell = grid.get(i, j-1)
                 down_cell = grid.get(i, j+1)
-                # check for color rule  # TODO: make it more general
+                # A color-scoped rule has one extra prefix word above.
                 if inside_grid(grid, (i, j-2)):
                     is_color_rule = maybe_add_rule([grid.get(i, j-2), up_cell, e, down_cell], ruleset)
                 else:
                     is_color_rule = False
 
                 if not is_color_rule:
-                        maybe_add_rule([up_cell, e, down_cell], ruleset)
+                    maybe_add_rule([up_cell, e, down_cell], ruleset)
 
     return ruleset

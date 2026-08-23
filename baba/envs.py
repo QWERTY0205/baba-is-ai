@@ -959,7 +959,11 @@ class SeededRuleCompositionEnv(BabaIsYouEnv):
         }
 
     def _transform_square_pos(self, pos, *, flip_vertical=False, transpose=False):
-        """Transform an interior layout without reversing rule-token order."""
+        """Transform a canonical layout while preserving its rule-token order.
+
+        The transformed generators define their canonical rules horizontally;
+        vertical reflection and transposition therefore keep the words ordered.
+        """
         x, y = pos
         if flip_vertical:
             y = self.height - 1 - y
@@ -968,6 +972,7 @@ class SeededRuleCompositionEnv(BabaIsYouEnv):
         return x, y
 
     def _transform_square_actions(self, actions, *, flip_vertical=False, transpose=False):
+        """Apply the same geometric transform to a reference action sequence."""
         vectors = {name: np.array(delta) for name, delta in ACTIONS.items()}
         names = {tuple(delta): name for name, delta in ACTIONS.items()}
         transformed = []
